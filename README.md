@@ -1,8 +1,16 @@
 # FUBench - Toy Benchmark from Fractal U Frontier LM Course Summer 2025
 
+
 ## Overview
 A toy framework for evaluating language models' mathematical problem-solving abilities using dynamically generated problems with verified solutions.
 The idea is to get a feel for what may have been used to RL DeepSeek R1.
+
+## tl;dr
+
+Here we see how DeepSeek V3 Base and DeepSeek R1 compare in solving a 3x3 system of linear equations:
+
+![DeepSeek R1 solving a 3x3 system of equations](docs/ss-r1.png)
+![DeepSeek V3 Base solving a 3x3 system of equations](docs/ss-base.png)
 
 ## Features
 - **Dynamic Problem Generation**: Multiple problem classes with random parameters
