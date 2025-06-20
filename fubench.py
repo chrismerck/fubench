@@ -4,7 +4,7 @@ import os
 import json
 import argparse
 from openai import OpenAI
-from problems import IntegerQuadraticProblem
+from problems import *
 from random import shuffle
 from rich.console import Console
 from rich.table import Table
@@ -14,6 +14,8 @@ from rich.text import Text
 from rich import print as rprint
 from datetime import datetime
 from pathlib import Path
+import subprocess
+import platform
 
 # Initialize OpenAI client for OpenRouter
 client = OpenAI(
@@ -28,7 +30,7 @@ with the answer. The reasoning process and answer are enclosed within <think> </
 <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think>
 <answer> answer here </answer>. User: {problem}. Assistant:"""
 
-def evaluate_problem(problem, model=None, prompt_template=DEFAULT_PROMPT, max_tokens=1000):
+def evaluate_problem(problem, model=None, prompt_template=DEFAULT_PROMPT, max_tokens=4000):
     """
     Evaluate a single problem using the specified model via completions API.
     
@@ -90,15 +92,184 @@ def evaluate_problem(problem, model=None, prompt_template=DEFAULT_PROMPT, max_to
             "model": model
         }
 
+def generate_latex_report(filename, log_data, args):
+    """Generate a LaTeX report with questions, reasoning, answers, and correctness."""
+    
+    # Escape special LaTeX characters but preserve math mode
+    def escape_latex(text, preserve_math=False):
+        if text is None:
+            return ""
+        
+        if preserve_math:
+            # Split by $ to preserve math mode
+            parts = text.split('$')
+            result = []
+            for i, part in enumerate(parts):
+                if i % 2 == 0:  # Outside math mode
+                    result.append(escape_latex(part, preserve_math=False))
+                else:  # Inside math mode
+                    result.append('$' + part + '$')
+            return ''.join(result)
+        
+        replacements = {
+            '\\': r'\textbackslash{}',
+            '{': r'\{',
+            '}': r'\}',
+            '$': r'\$',
+            '&': r'\&',
+            '%': r'\%',
+            '#': r'\#',
+            '_': r'\_',
+            '~': r'\textasciitilde{}',
+            '^': r'\^{}',
+            '<': r'\textless{}',
+            '>': r'\textgreater{}',
+        }
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        return text
+    
+    # Extract reasoning from response
+    def extract_reasoning(response):
+        if not response:
+            return "No reasoning provided"
+        
+        # Try to extract content between <think> tags
+        if "<think>" in response and "</think>" in response:
+            start = response.find("<think>") + len("<think>")
+            end = response.find("</think>")
+            return response[start:end].strip()
+        
+        # Otherwise return everything before <answer> tag
+        if "<answer>" in response:
+            return response[:response.find("<answer>")].strip()
+        
+        return response.strip()
+    
+    latex_content = r"""\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{datetime2}
+
+% Define colors
+\definecolor{correctgreen}{RGB}{0,150,0}
+\definecolor{incorrectred}{RGB}{200,0,0}
+\definecolor{boxgray}{RGB}{240,240,240}
+
+% Setup fancy headers
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{FuBench Evaluation Report}
+\rhead{\DTMnow}
+\cfoot{\thepage}
+
+% Setup tcolorbox styles
+\tcbset{
+    base/.style={
+        boxrule=0.5pt,
+        arc=2mm,
+        fonttitle=\bfseries,
+        colback=boxgray,
+        colframe=black!50
+    },
+    correct/.style={
+        base,
+        colframe=correctgreen,
+        colbacktitle=correctgreen!20
+    },
+    incorrect/.style={
+        base,
+        colframe=incorrectred,
+        colbacktitle=incorrectred!20
+    }
+}
+
+\title{Mathematical Problem Evaluation Report}
+\author{Model: """ + escape_latex(args.model) + r"""}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Summary}
+\begin{itemize}
+    \item \textbf{Model:} """ + escape_latex(args.model) + r"""
+    \item \textbf{Problem Class:} """ + escape_latex(args.__dict__['class']) + r"""
+    \item \textbf{Total Problems:} """ + str(log_data['summary']['total_problems']) + r"""
+    \item \textbf{Correct Answers:} """ + str(log_data['summary']['correct_count']) + r"""
+    \item \textbf{Accuracy:} """ + f"{log_data['summary']['accuracy']:.1%}" + r"""
+\end{itemize}
+
+\section{Detailed Results}
+
+"""
+    
+    for i, result in enumerate(log_data['detailed_results'], 1):
+        # Determine if answer is correct
+        is_correct = result.get('is_correct', False)
+        box_style = 'correct' if is_correct else 'incorrect'
+        
+        # Extract components
+        problem = result.get('problem', 'No problem text')
+        prompt = result.get('prompt', 'No prompt available')
+        full_response = result.get('full_response', '')
+        reasoning = extract_reasoning(full_response)
+        model_answer = result.get('extracted_answer', 'No answer extracted')
+        correct_answer = result.get('correct_answer', 'Unknown')
+        
+        # Add problem to LaTeX
+        latex_content += f"""
+\\subsection{{Problem {i}}}
+
+\\begin{{tcolorbox}}[colback=gray!5, colframe=gray!50, boxrule=0.5pt, title={{Question}}]
+{escape_latex(problem, preserve_math=True)}
+\\end{{tcolorbox}}
+
+\\begin{{tcolorbox}}[{box_style}, title={{Model Response}}]
+\\textbf{{Full Response:}}
+\\begin{{quote}}
+{escape_latex(full_response, preserve_math=True)}
+\\end{{quote}}
+
+\\textbf{{Extracted Answer:}} {escape_latex(model_answer, preserve_math=True)}
+
+\\textbf{{Correct Answer:}} {escape_latex(correct_answer)}
+
+\\textbf{{Status:}} """
+        
+        if is_correct:
+            latex_content += r"\textcolor{correctgreen}{$\checkmark$ Correct}"
+        else:
+            latex_content += r"\textcolor{incorrectred}{$\times$ Incorrect}"
+            
+        latex_content += "\n\\end{tcolorbox}\n\n\\clearpage\n"
+    
+    latex_content += r"""
+\end{document}
+"""
+    
+    # Write to file
+    with open(filename, 'w') as f:
+        f.write(latex_content)
+
+
 def main():
     console = Console()
     
     parser = argparse.ArgumentParser(description='Evaluate mathematical problems using OpenRouter')
     parser.add_argument('--model', default='deepseek/deepseek-v3-base:free', help='Model to use')
+    parser.add_argument('--class', default='IntegerQuadraticProblem', help='Problem class name to use')
     parser.add_argument('--num-problems', type=int, default=10, help='Number of problems to evaluate')
     parser.add_argument('--output', default='results.json', help='Output file for results')
     parser.add_argument('--prompt-file', help='File containing custom prompt template')
     parser.add_argument('--verbose', action='store_true', help='Show full model responses')
+    parser.add_argument('--pdf', action='store_true', help='Compile and open PDF report')
+    parser.add_argument('--max-tokens', type=int, default=4000, help='Maximum tokens for model response')
     
     args = parser.parse_args()
     
@@ -114,10 +285,17 @@ def main():
         with open(args.prompt_file, 'r') as f:
             prompt_template = f.read()
     
+    # Get problem class
+    try:
+        ProblemClass = eval(args.__dict__['class'])
+    except:
+        console.print(f"[bold red]Error:[/bold red] Unknown problem class '{args.__dict__['class']}'")
+        return
+    
     # Get problems
-    all_problems = [IntegerQuadraticProblem() for i in range(10)]
+    all_problems = [ProblemClass() for i in range(args.num_problems)]
     shuffle(all_problems)
-    problems_to_evaluate = all_problems[:args.num_problems]
+    problems_to_evaluate = all_problems
     
     # Create logs directory if it doesn't exist
     logs_dir = Path("logs")
@@ -131,6 +309,7 @@ def main():
     console.print(Panel.fit(
         f"[bold cyan]Mathematical Problem Evaluation[/bold cyan]\n"
         f"Model: [yellow]{args.model}[/yellow]\n"
+        f"Problem Class: [magenta]{args.__dict__['class']}[/magenta]\n"
         f"Problems: [green]{len(problems_to_evaluate)}[/green]\n"
         f"Type: Base model (completions API)",
         title="[bold]FuBench[/bold]",
@@ -164,7 +343,7 @@ def main():
             if args.verbose:
                 console.print(f"\n[bold]Problem {i+1}:[/bold] {problem}")
             
-            result = evaluate_problem(problem, model=args.model, prompt_template=prompt_template)
+            result = evaluate_problem(problem, model=args.model, prompt_template=prompt_template, max_tokens=args.max_tokens)
             
             # Add timestamp and index to result
             result['timestamp'] = datetime.now().isoformat()
@@ -243,7 +422,7 @@ def main():
             "model": args.model,
             "num_problems": len(problems_to_evaluate),
             "prompt_template": prompt_template,
-            "max_tokens": 1000,
+            "max_tokens": args.max_tokens,
             "temperature": 0.0
         },
         "summary": {
@@ -257,8 +436,54 @@ def main():
     with open(log_filename, 'w') as f:
         json.dump(log_data, f, indent=2)
     
+    # Generate LaTeX report
+    tex_filename = logs_dir / f"fubench_report_{timestamp}_{args.model.replace('/', '_')}.tex"
+    generate_latex_report(tex_filename, log_data, args)
+    
     console.print(f"\n[dim]Summary saved to[/dim] [cyan]{args.output}[/cyan]")
     console.print(f"[dim]Detailed log saved to[/dim] [cyan]{log_filename}[/cyan]")
+    console.print(f"[dim]LaTeX report saved to[/dim] [cyan]{tex_filename}[/cyan]")
+    
+    # Compile and open PDF if requested
+    if args.pdf:
+        pdf_filename = tex_filename.with_suffix('.pdf')
+        
+        console.print(f"\n[dim]Compiling LaTeX to PDF...[/dim]")
+        
+        # Try to compile with pdflatex
+        try:
+            # Run pdflatex twice to ensure references are resolved
+            for i in range(2):
+                result = subprocess.run(
+                    ['pdflatex', '-interaction=nonstopmode', '-output-directory', str(logs_dir), str(tex_filename)],
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.returncode != 0 and i == 1:  # Only check on second run
+                    console.print(f"[yellow]Warning: pdflatex had some issues (this is often okay):[/yellow]")
+                    if args.verbose:
+                        console.print(f"[dim]{result.stderr[:500]}...[/dim]")
+            
+            if pdf_filename.exists():
+                console.print(f"[green]PDF compiled successfully:[/green] [cyan]{pdf_filename}[/cyan]")
+                
+                # Open PDF based on platform
+                console.print(f"[dim]Opening PDF...[/dim]")
+                if platform.system() == 'Darwin':  # macOS
+                    subprocess.run(['open', str(pdf_filename)])
+                elif platform.system() == 'Windows':
+                    os.startfile(str(pdf_filename))
+                else:  # Linux and others
+                    subprocess.run(['xdg-open', str(pdf_filename)])
+                    
+            else:
+                console.print(f"[red]Error: PDF file was not created[/red]")
+                
+        except FileNotFoundError:
+            console.print(f"[red]Error: pdflatex not found. Please install a LaTeX distribution.[/red]")
+        except Exception as e:
+            console.print(f"[red]Error compiling/opening PDF: {e}[/red]")
 
 if __name__ == "__main__":
     main()
