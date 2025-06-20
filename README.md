@@ -1,7 +1,8 @@
 # FUBench - Toy Benchmark from Fractal U Frontier LM Course Summer 2025
 
 ## Overview
-A comprehensive framework for evaluating language models' mathematical problem-solving abilities using dynamically generated problems with verified solutions.
+A toy framework for evaluating language models' mathematical problem-solving abilities using dynamically generated problems with verified solutions.
+The idea is to get a feel for what may have been used to RL DeepSeek R1.
 
 ## Features
 - **Dynamic Problem Generation**: Multiple problem classes with random parameters
